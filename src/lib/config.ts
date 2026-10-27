@@ -13,7 +13,9 @@ export interface AppConfig {
   apiBase: string;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function loadConfig(
+  env: Record<string, string | undefined> = process.env,
+): AppConfig {
   const clientId = env.PAYPAL_CLIENT_ID?.trim() || undefined;
   const clientSecret = env.PAYPAL_CLIENT_SECRET?.trim() || undefined;
   const payPalEnv: "sandbox" | "live" = env.PAYPAL_ENV === "live" ? "live" : "sandbox";
