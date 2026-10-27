@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+*.log
+.DS_Store
+
+# local databases (seeded via `npm run seed`)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# secrets
+.env
+.env.local
+.env.production
