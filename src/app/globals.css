@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-800 bg-slate-900/60 p-5;
+  }
+  .stat-value {
+    @apply text-3xl font-bold tracking-tight text-white;
+  }
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-wider text-slate-400;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .badge {
+    @apply inline-block rounded-full px-2 py-0.5 text-xs font-semibold;
+  }
+}
