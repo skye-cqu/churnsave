@@ -64,7 +64,11 @@ export function computeBuyerStats(txs: PayPalTransaction[]): BuyerStats | null {
     .filter((n) => !Number.isNaN(n));
   const first = Math.min(...dates);
   const last = Math.max(...dates);
-  const tenureMonths = Math.max(1, Math.ceil((last - first) / (1000 * 60 * 60 * 24 * 30)));
+  // Calendar-agnostic tenure: average month length (30.44d) + round() keeps this
+  // stable across DST transitions (exact 30-day buckets with ceil() flipped on
+  // clock-change days).
+  const tenureDays = (last - first) / 86_400_000;
+  const tenureMonths = Math.max(1, Math.round(tenureDays / 30.44));
   return {
     ltv,
     currency: paid[0].transaction_amount.currency_code,
