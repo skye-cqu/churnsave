@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getConfig, getStore } from "@/lib/runtime";
+import { getConfig, getGateway, getLlm, getStore } from "@/lib/runtime";
 import { SimulateButton } from "@/components/SimulateButton";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +31,12 @@ export default function DashboardPage() {
   const offers = store.listOffers(12);
   const subscriptions = store.listSubscriptions();
   const mode = getConfig().mockMode ? "MOCK (no PayPal credentials)" : `LIVE ${getConfig().env}`;
+  const llm = getLlm();
+  const aiLabel = !llm.enabled
+    ? "off (pure rules)"
+    : llm.name === "nebius"
+      ? `Nebius · ${llm.model}`
+      : "mock (offline)";
 
   return (
     <div className="space-y-8">
@@ -38,7 +44,10 @@ export default function DashboardPage() {
       <section>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">Recovery impact</h2>
-          <span className="badge bg-slate-800 text-slate-400">gateway: {mode}</span>
+          <div className="flex items-center gap-2">
+            <span className="badge bg-blue-500/20 text-blue-300">AI decision layer: {aiLabel}</span>
+            <span className="badge bg-slate-800 text-slate-400">gateway: {mode}</span>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <div className="card">
@@ -174,27 +183,48 @@ export default function DashboardPage() {
         <section>
           <h2 className="mb-3 text-lg font-semibold text-white">Offers</h2>
           <div className="space-y-3">
-            {offers.map((o) => (
-              <div key={o.id} className="card text-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-medium text-white">{o.title}</div>
-                    <div className="text-xs text-slate-500">
-                      {o.kind} · {o.discount_percent}% off · {o.currency} {o.offer_price.toFixed(2)}
+            {offers.map((o) => {
+              const aiTag =
+                o.ai_provider === "nebius"
+                  ? "AI: Nebius"
+                  : o.ai_provider === "mock"
+                    ? "AI: mock"
+                    : "AI: rules";
+              return (
+                <div key={o.id} className="card text-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-medium text-white">{o.title}</div>
+                      <div className="text-xs text-slate-500">
+                        {o.kind} · {o.discount_percent}% off · {o.currency} {o.offer_price.toFixed(2)}
+                      </div>
                     </div>
+                    <span className={`badge ${statusColor[o.status] ?? ""}`}>{o.status}</span>
                   </div>
-                  <span className={`badge ${statusColor[o.status] ?? ""}`}>{o.status}</span>
+                  {o.ai_reasoning && (
+                    <div className="mt-2 rounded-lg border border-blue-900/50 bg-blue-950/20 p-3">
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="badge bg-blue-500/20 text-blue-300">{aiTag}</span>
+                        {o.ai_confidence != null && (
+                          <span className="text-xs text-slate-500">
+                            confidence {(o.ai_confidence * 100).toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs leading-relaxed text-slate-300">{o.ai_reasoning}</p>
+                    </div>
+                  )}
+                  <div className="mt-2 flex items-center justify-between">
+                    <Link href={`/offers/${o.token}`} className="text-xs text-blue-400 hover:underline">
+                      Open buyer page →
+                    </Link>
+                    <span className="text-xs text-slate-500">
+                      retains {money(o.kind === "downgrade" ? (o.new_price ?? 0) : o.offer_price, o.currency)}/mo
+                    </span>
+                  </div>
                 </div>
-                <div className="mt-2 flex items-center justify-between">
-                  <Link href={`/offers/${o.token}`} className="text-xs text-blue-400 hover:underline">
-                    Open buyer page →
-                  </Link>
-                  <span className="text-xs text-slate-500">
-                    retains {money(o.kind === "downgrade" ? (o.new_price ?? 0) : o.offer_price, o.currency)}/mo
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {offers.length === 0 && (
               <div className="card text-sm text-slate-500">No offers yet.</div>
             )}

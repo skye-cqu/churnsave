@@ -1,7 +1,12 @@
 /**
  * ChurnSave agent — the closed loop:
  *   webhook event -> fetch buyer history (Transaction Search) -> segment ->
- *   decide offer -> persist offer with one-click accept URL.
+ *   LLM buyer portrait -> decide offer -> LLM reasoning review ->
+ *   persist offer with one-click accept URL.
+ *
+ * The rule engine (strategy.ts) remains the decision authority; the LLM layer
+ * (llm.ts) only annotates it (portrait + reasoning). Every LLM step degrades to
+ * deterministic rule text on failure/timeout, so the loop never blocks on AI.
  */
 import { Graph, type AgentState } from "./graph";
 import {
@@ -12,17 +17,26 @@ import {
   type ChurnEventType,
   type Segment,
 } from "./strategy";
+import {
+  createLlmProvider,
+  loadLlmConfig,
+  localBuyerProfile,
+  localOfferReasoning,
+  type LlmProvider,
+} from "./llm";
 import type { PayPalGateway } from "../paypal/types";
 import type { ChurnStore, OfferRow, Subscription } from "../../db/store";
 
 export interface AgentContext extends AgentState {
   store: ChurnStore;
   gateway: PayPalGateway;
+  llm: LlmProvider;
   event: { eventId: string; eventType: ChurnEventType; paypalSubscriptionId: string };
   subscription: Subscription | null;
   segment: Segment | null;
   offer: OfferRow | null;
   offerUrl: string | null;
+  buyerProfile: string | null;
   error?: string;
 }
 
@@ -32,6 +46,8 @@ export interface AgentOutcome {
   segment: Segment | null;
   offer: OfferRow | null;
   offerUrl: string | null;
+  buyerProfile: string | null;
+  aiProvider: string | null;
   trace: string[];
 }
 
@@ -75,6 +91,41 @@ function buildGraph(ctx: AgentContext): Graph<AgentContext> {
           : "no-history -> unknown",
       );
     })
+    .addNode("summarizeBuyerHistory", async (s) => {
+      // LLM reasoning step 1: transactions -> natural-language buyer portrait.
+      if (!s.subscription || s.error) return;
+      if (!s.llm.enabled) {
+        s.trace.push("llm:disabled");
+        return;
+      }
+      const txs = s.store.getTransactions(s.subscription.id);
+      const input = {
+        buyerName: s.subscription.buyer_name,
+        plan: s.subscription.plan,
+        segment: s.segment ?? "unknown",
+        stats: computeBuyerStats(
+          txs.map((t) => ({
+            transaction_id: t.id,
+            transaction_status: "S",
+            transaction_amount: { currency_code: t.currency, value: String(t.amount) },
+            transaction_initiation_date: t.paid_at,
+          })),
+        ),
+        transactions: txs.map((t) => ({
+          amount: t.amount,
+          currency: t.currency,
+          paid_at: t.paid_at,
+        })),
+      };
+      const res = await s.llm.summarizeBuyerHistory(input);
+      if (res.ok && res.data) {
+        s.buyerProfile = res.data;
+        s.trace.push(`llm:profile:${res.provider}`);
+      } else {
+        s.buyerProfile = localBuyerProfile(input);
+        s.trace.push(`llm:profile:fallback(${res.error ?? "unknown"})`);
+      }
+    })
     .addNode("decideOffer", async (s) => {
       if (!s.subscription || s.error) return;
       const draft = decideOffer({
@@ -110,13 +161,72 @@ function buildGraph(ctx: AgentContext): Graph<AgentContext> {
       s.trace.push(
         `offer saved: ${recoveredMonthlyMrr(draft)} ${s.subscription.currency}/mo retained if accepted`,
       );
+    })
+    .addNode("decideOfferReasoning", async (s) => {
+      // LLM reasoning step 2: review the rule-offer candidate and produce a
+      // one-sentence personalized rationale. Failure/timeout -> rule copy.
+      if (!s.offer || !s.subscription || s.error) return;
+      const input = {
+        buyerName: s.subscription.buyer_name,
+        plan: s.subscription.plan,
+        segment: s.segment ?? "unknown",
+        eventType: s.event.eventType,
+        offer: {
+          kind: s.offer.kind,
+          title: s.offer.title,
+          discountPercent: s.offer.discount_percent,
+          offerPrice: s.offer.offer_price,
+          originalPrice: s.offer.original_price,
+          currency: s.offer.currency,
+          newPlan: s.offer.new_plan ?? undefined,
+        },
+        profile: s.buyerProfile,
+      };
+      if (!s.llm.enabled) {
+        // Pure-rules mode: createOffer already stored the rule copy under
+        // provider "rules"; no LLM reasoning step is recorded at all.
+        return;
+      }
+      const res = await s.llm.decideOfferReasoning(input);
+      if (res.ok && res.data) {
+        s.store.setOfferAi(s.offer.id, {
+          reasoning: res.data.reasoning,
+          provider: res.provider,
+          model: res.model,
+          confidence: res.data.confidence,
+          profile: s.buyerProfile,
+        });
+        // keep the in-memory row consistent with what was persisted
+        s.offer.ai_reasoning = res.data.reasoning;
+        s.offer.ai_provider = res.provider;
+        s.offer.ai_model = res.model;
+        s.offer.ai_confidence = res.data.confidence;
+        s.offer.ai_profile = s.buyerProfile;
+        s.trace.push(`llm:reasoning:${res.provider}(conf:${res.data.confidence.toFixed(2)})`);
+      } else {
+        const fallback = localOfferReasoning(input);
+        s.store.setOfferAi(s.offer.id, {
+          reasoning: fallback.reasoning,
+          provider: "rules",
+          model: null,
+          confidence: fallback.confidence,
+          profile: s.buyerProfile,
+        });
+        s.offer.ai_reasoning = fallback.reasoning;
+        s.offer.ai_provider = "rules";
+        s.offer.ai_confidence = fallback.confidence;
+        s.offer.ai_profile = s.buyerProfile;
+        s.trace.push(`llm:reasoning:fallback(${res.error ?? "unknown"})`);
+      }
     });
 
   return graph
     .setEntryPoint("findSubscription")
     .addEdge("findSubscription", "fetchBuyerHistory")
     .addEdge("fetchBuyerHistory", "segmentBuyer")
-    .addEdge("segmentBuyer", "decideOffer");
+    .addEdge("segmentBuyer", "summarizeBuyerHistory")
+    .addEdge("summarizeBuyerHistory", "decideOffer")
+    .addEdge("decideOffer", "decideOfferReasoning");
 }
 
 /** Run the agent for one billing webhook event and persist its outcome. */
@@ -124,15 +234,18 @@ export async function runChurnAgent(
   store: ChurnStore,
   gateway: PayPalGateway,
   input: { eventId: string; eventType: ChurnEventType; paypalSubscriptionId: string },
+  llm: LlmProvider = createLlmProvider(loadLlmConfig()),
 ): Promise<AgentOutcome> {
   const ctx: AgentContext = {
     store,
     gateway,
+    llm,
     event: input,
     subscription: null,
     segment: null,
     offer: null,
     offerUrl: null,
+    buyerProfile: null,
     trace: [],
   };
   store.setEventStatus(input.eventId, "processing");
@@ -148,6 +261,8 @@ export async function runChurnAgent(
       segment: ctx.segment,
       offer: null,
       offerUrl: null,
+      buyerProfile: null,
+      aiProvider: null,
       trace: ctx.trace,
     };
   }
@@ -160,6 +275,8 @@ export async function runChurnAgent(
       segment: null,
       offer: null,
       offerUrl: null,
+      buyerProfile: null,
+      aiProvider: null,
       trace: ctx.trace,
     };
   }
@@ -172,6 +289,8 @@ export async function runChurnAgent(
       segment: ctx.segment,
       offer: ctx.offer,
       offerUrl: ctx.offerUrl,
+      buyerProfile: ctx.buyerProfile,
+      aiProvider: ctx.offer.ai_provider,
       trace: ctx.trace,
     };
   }
@@ -183,6 +302,8 @@ export async function runChurnAgent(
     segment: ctx.segment,
     offer: null,
     offerUrl: null,
+    buyerProfile: ctx.buyerProfile,
+    aiProvider: null,
     trace: ctx.trace,
   };
 }

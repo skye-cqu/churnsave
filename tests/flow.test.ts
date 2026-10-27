@@ -9,6 +9,7 @@ import { seedDemoData } from "../src/db/seed-data";
 import { loadConfig } from "../src/lib/config";
 import { MockPayPalGateway } from "../src/lib/paypal/mock";
 import { acceptOffer, AcceptError } from "../src/lib/recover";
+import { MockProvider as MockLlmProvider } from "../src/lib/agent/llm";
 import { handlePayPalWebhook } from "../src/lib/webhook";
 
 function webhookBody(paypalSubscriptionId: string, eventType: string): string {
@@ -32,7 +33,7 @@ describe("churn recovery closed loop (mock gateway)", () => {
       headers: {},
       rawBody: webhookBody("I-DEMO_CHAMPION_01", "BILLING.SUBSCRIPTION.CANCELLED"),
       source: "paypal",
-    });
+    }, new MockLlmProvider());
     expect(res.status).toBe(200);
     expect(res.body.agentStatus).toBe("offer_created");
     expect(res.body.segment).toBe("champion");
@@ -77,7 +78,7 @@ describe("churn recovery closed loop (mock gateway)", () => {
       headers: {},
       rawBody: webhookBody("I-DEMO_LIGHT_03", "BILLING.SUBSCRIPTION.CANCELLED"),
       source: "demo",
-    });
+    }, new MockLlmProvider());
     expect(res.body.segment).toBe("light");
     const offer = store.getOfferByToken(res.body.offerToken as string)!;
     expect(offer.kind).toBe("downgrade");
@@ -102,7 +103,7 @@ describe("churn recovery closed loop (mock gateway)", () => {
       headers: {},
       rawBody: webhookBody("I-DEMO_STEADY_02", "BILLING.SUBSCRIPTION.PAYMENT.FAILED"),
       source: "demo",
-    });
+    }, new MockLlmProvider());
     expect(res.body.segment).toBe("steady");
     const offer = store.getOfferByToken(res.body.offerToken as string)!;
     expect(offer.discount_percent).toBe(10); // non-champion payment rescue
@@ -120,13 +121,13 @@ describe("churn recovery closed loop (mock gateway)", () => {
     const ignored = await handlePayPalWebhook(store, gateway, config, {
       headers: {},
       rawBody: webhookBody("I-DOES-NOT-EXIST", "BILLING.SUBSCRIPTION.CANCELLED"),
-    });
+    }, new MockLlmProvider());
     expect(ignored.body.agentStatus).toBe("ignored");
 
     const bad = await handlePayPalWebhook(store, gateway, config, {
       headers: {},
       rawBody: "not json",
-    });
+    }, new MockLlmProvider());
     expect(bad.status).toBe(400);
   });
 
@@ -136,7 +137,7 @@ describe("churn recovery closed loop (mock gateway)", () => {
     const res = await handlePayPalWebhook(store, new MockPayPalGateway(), loadConfig({}), {
       headers: {},
       rawBody: webhookBody("I-DEMO_CHAMPION_01", "PAYMENT.CAPTURE.COMPLETED"),
-    });
+    }, new MockLlmProvider());
     expect(res.body.ignored).toBe(true);
     expect(store.stats().totalEvents).toBe(0);
   });

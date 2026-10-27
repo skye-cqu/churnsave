@@ -35,7 +35,10 @@ ChurnSave agent (LangGraph-style state machine)
   1. findSubscription      – map webhook → subscription
   2. fetchBuyerHistory     – PayPal Transaction Search
   3. segmentBuyer          – LTV + tenure → champion / steady / light / unknown
-  4. decideOffer           – rules → personalized offer
+  4. summarizeBuyerHistory – LLM: transactions → buyer portrait (trace/UI)
+  5. decideOffer           – rules → personalized offer (decision authority)
+  6. decideOfferReasoning  – LLM: reviews the offer candidate → one-sentence
+                             personalized rationale + confidence
         │
         ▼
 Offer page /offers/<token>   (email/dashboard link)
@@ -55,6 +58,34 @@ POST /api/offers/<token>/accept
 | Light (LTV<100)    | cancellation       | downgrade to Starter (−45%)  | 55%          |
 | Unknown            | cancellation       | 10% off one month            | 90%          |
 | any                | payment failure    | 10–15% payment rescue        | 85–90%       |
+
+## AI decision layer
+
+The rule engine above decides **what** to offer; an LLM layer explains **why**
+and personalizes the pitch. Two reasoning points run inside the agent loop:
+
+1. **`summarizeBuyerHistory`** — the buyer's PayPal transactions become a
+   natural-language portrait ("12 payments totaling $588.00 over ~12 months…
+   high-LTV loyal customer"), stored on the offer and visible in the dashboard.
+2. **`decideOfferReasoning`** — the LLM reviews the rule-engine's offer
+   candidate and writes a one-sentence personalized rationale with a
+   confidence score. Buyers see it on the offer page ("AI insight"), merchants
+   see it on offer cards; the agent trace shows each LLM step.
+
+Providers (pluggable, in `src/lib/agent/llm.ts`):
+
+- **`NebiusProvider`** — OpenAI-compatible `/chat/completions` against
+  [Nebius Token Factory](https://nebius.ai) with NVIDIA's open
+  `nvidia/llama-3.1-nemotron-70b-instruct` by default. Output is
+  JSON-schema-constrained (`{reasoning, confidence}`) and validated.
+- **`MockProvider`** (default, zero config) — deterministic offline mirror of
+  the rules, so tests and key-less runs stay fully green without network.
+
+Reliability contract: every LLM call is bounded (3s timeout by default) and any
+failure — no key, layer disabled, timeout, HTTP error, bad JSON — degrades to
+the deterministic rule copy without blocking the retention loop. Set
+`LLM_ENABLED=false` for pure-rules mode, or `NEBIUS_API_KEY=...` to go live.
+One-step setup guide: [`docs/NEBIUS.md`](docs/NEBIUS.md).
 
 ## Quick start (no PayPal account needed)
 
@@ -91,8 +122,11 @@ npm run seed && npm run dev
 npm test
 ```
 
-20 tests, fully offline: decision matrix unit tests, live-REST adapter against a stubbed
-`fetch`, and the complete closed loop (webhook → agent → offer → accept → recovery).
+20 offline tests: decision matrix unit tests, live-REST adapter against a
+stubbed `fetch`, the LLM provider layer (mock determinism, Nebius request
+construction/degradation/timeout against a stubbed fetch), and the complete
+closed loop (webhook → agent → offer → accept → recovery) — with the LLM layer
+in mock mode, in failure-fallback mode, and switched off entirely.
 
 ## Repo layout
 
@@ -106,5 +140,6 @@ tests           Vitest: strategy, gateway, closed-loop flow
 docs            Architecture deep-dive, 90-second demo script
 ```
 
-MIT licensed. This is a hackathon MVP: the recovery engine and PayPal integrations are real
-and tested; deployment, email delivery and LLM-based negotiation are roadmap items.
+MIT licensed. This is a hackathon MVP: the recovery engine, PayPal integrations
+and the LLM decision layer (Nebius/NVIDIA or offline mock) are real and tested;
+deployment and email delivery are roadmap items.

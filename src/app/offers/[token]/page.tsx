@@ -20,6 +20,12 @@ export default async function OfferPage({
   if (!offer) notFound();
   const subscription = store.getSubscriptionById(offer.subscription_id);
   const accepted = offer.status === "accepted";
+  const aiProviderLabel =
+    offer.ai_provider === "nebius"
+      ? `Nebius · ${offer.ai_model ?? "LLM"}`
+      : offer.ai_provider === "mock"
+        ? "AI (offline mock)"
+        : "Rule engine";
 
   return (
     <div className="mx-auto max-w-md space-y-6 py-6">
@@ -32,6 +38,21 @@ export default async function OfferPage({
 
       <div className="card space-y-5">
         <p className="text-sm leading-relaxed text-slate-300">{offer.message}</p>
+
+        {offer.ai_reasoning && (
+          <div className="rounded-lg border border-blue-900/60 bg-blue-950/30 p-4">
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="badge bg-blue-500/20 text-blue-300">AI insight</span>
+              <span className="text-xs text-slate-500">{aiProviderLabel}</span>
+              {offer.ai_confidence != null && (
+                <span className="ml-auto text-xs text-slate-500">
+                  confidence {(offer.ai_confidence * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            <p className="text-sm leading-relaxed text-slate-300">{offer.ai_reasoning}</p>
+          </div>
+        )}
 
         <div className="flex items-center justify-center gap-4 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
           <div className="text-center">

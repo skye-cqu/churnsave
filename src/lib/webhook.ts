@@ -5,6 +5,7 @@
  */
 import { runChurnAgent } from "./agent/run";
 import type { ChurnEventType } from "./agent/strategy";
+import type { LlmProvider } from "./agent/llm";
 import type { AppConfig } from "./config";
 import type { ChurnStore } from "../db/store";
 import type { PayPalGateway, WebhookHeaders } from "./paypal/types";
@@ -35,6 +36,7 @@ export async function handlePayPalWebhook(
   gateway: PayPalGateway,
   config: AppConfig,
   input: WebhookInput,
+  llm?: LlmProvider,
 ): Promise<WebhookResult> {
   let parsed: { event_type?: string; resource?: { id?: string } };
   try {
@@ -71,11 +73,16 @@ export async function handlePayPalWebhook(
     status: "received",
   });
 
-  const outcome = await runChurnAgent(store, gateway, {
-    eventId: event.id,
-    eventType,
-    paypalSubscriptionId: resourceId,
-  });
+  const outcome = await runChurnAgent(
+    store,
+    gateway,
+    {
+      eventId: event.id,
+      eventType,
+      paypalSubscriptionId: resourceId,
+    },
+    llm,
+  );
 
   return {
     status: 200,
@@ -86,6 +93,7 @@ export async function handlePayPalWebhook(
       segment: outcome.segment,
       offerToken: outcome.offer?.token ?? null,
       offerUrl: outcome.offerUrl,
+      aiProvider: outcome.aiProvider,
       trace: outcome.trace,
     },
   };

@@ -1,4 +1,4 @@
-import { getConfig, getGateway, getStore } from "@/lib/runtime";
+import { getConfig, getGateway, getLlm, getStore } from "@/lib/runtime";
 import { handlePayPalWebhook } from "@/lib/webhook";
 
 /**
@@ -33,6 +33,6 @@ export async function POST(req: Request): Promise<Response> {
     headers: { "content-type": "application/json" },
     rawBody,
     source: "demo",
-  });
+  }, getLlm());
   return Response.json({ ...result.body, subscription: sub.buyer_name }, { status: result.status });
 }

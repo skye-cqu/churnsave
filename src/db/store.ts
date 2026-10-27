@@ -68,6 +68,16 @@ export interface OfferRow {
   expires_at: string;
   status: OfferStatus;
   created_at: string;
+  /** LLM layer: one-sentence personalized rationale (falls back to rule copy). */
+  ai_reasoning: string | null;
+  /** "nebius" | "mock" | "rules" (rules = LLM produced nothing, rule text used). */
+  ai_provider: string | null;
+  /** Model identifier, e.g. nvidia/llama-3.1-nemotron-70b-instruct. */
+  ai_model: string | null;
+  /** 0..1, null when rule fallback. */
+  ai_confidence: number | null;
+  /** Natural-language buyer portrait from transaction history. */
+  ai_profile: string | null;
 }
 
 export interface RecoveryRow {
@@ -160,14 +170,40 @@ CREATE TABLE IF NOT EXISTS recoveries (
   monthly_mrr REAL NOT NULL,
   currency TEXT NOT NULL,
   status TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  ai_reasoning TEXT,
+  ai_provider TEXT,
+  ai_model TEXT,
+  ai_confidence REAL,
+  ai_profile TEXT
 );
 `;
+
+/**
+ * Add the LLM AI columns to offers tables created before the decision layer
+ * existed (fresh databases get them from SCHEMA directly). Cheap and idempotent.
+ */
+function migrateOffersAi(db: Database.Database): void {
+  const cols = new Set(
+    (db.pragma("table_info(offers)") as Array<{ name: string }>).map((c) => c.name),
+  );
+  const wanted: Array<[string, string]> = [
+    ["ai_reasoning", "TEXT"],
+    ["ai_provider", "TEXT"],
+    ["ai_model", "TEXT"],
+    ["ai_confidence", "REAL"],
+    ["ai_profile", "TEXT"],
+  ];
+  for (const [name, type] of wanted) {
+    if (!cols.has(name)) db.exec(`ALTER TABLE offers ADD COLUMN ${name} ${type}`);
+  }
+}
 
 /** Typed data-access wrapper around better-sqlite3. One instance per app/test. */
 export class ChurnStore {
   constructor(readonly db: Database.Database) {
     db.exec(SCHEMA);
+    migrateOffersAi(db);
   }
 
   static inMemory(): ChurnStore {
@@ -317,15 +353,30 @@ export class ChurnStore {
   // -- offers ---------------------------------------------------------------
 
   createOffer(
-    o: Omit<OfferRow, "id" | "created_at" | "status"> & { id?: string; status?: OfferStatus },
+    o: Omit<
+      OfferRow,
+      | "id"
+      | "created_at"
+      | "status"
+      | "ai_reasoning"
+      | "ai_provider"
+      | "ai_model"
+      | "ai_confidence"
+      | "ai_profile"
+    > &
+      Partial<Pick<OfferRow, "ai_reasoning" | "ai_provider" | "ai_model" | "ai_confidence" | "ai_profile">> & {
+        id?: string;
+        status?: OfferStatus;
+      },
   ): OfferRow {
     const id = o.id ?? randomUUID();
     this.db
       .prepare(
         `INSERT INTO offers (id, event_id, subscription_id, token, kind, title, message,
             discount_percent, discount_months, new_plan, new_price, original_price, offer_price,
-            currency, expires_at, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            currency, expires_at, status, created_at,
+            ai_reasoning, ai_provider, ai_model, ai_confidence, ai_profile)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -345,8 +396,41 @@ export class ChurnStore {
         o.expires_at,
         o.status ?? "pending",
         new Date().toISOString(),
+        // LLM fields default to the deterministic rule copy until (unless) the
+        // reasoning step overwrites them — the loop never waits on the LLM.
+        o.ai_reasoning ?? o.message,
+        o.ai_provider ?? "rules",
+        o.ai_model ?? null,
+        o.ai_confidence ?? null,
+        o.ai_profile ?? null,
       );
     return this.getOfferByToken(o.token)!;
+  }
+
+  /** Persist the LLM reasoning step's output (or its rule fallback) on an offer. */
+  setOfferAi(
+    id: string,
+    ai: {
+      reasoning: string;
+      provider: string;
+      model?: string | null;
+      confidence?: number | null;
+      profile?: string | null;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE offers SET ai_reasoning = ?, ai_provider = ?, ai_model = ?,
+            ai_confidence = ?, ai_profile = COALESCE(?, ai_profile) WHERE id = ?`,
+      )
+      .run(
+        ai.reasoning,
+        ai.provider,
+        ai.model ?? null,
+        ai.confidence ?? null,
+        ai.profile ?? null,
+        id,
+      );
   }
 
   getOfferByToken(token: string): OfferRow | undefined {
